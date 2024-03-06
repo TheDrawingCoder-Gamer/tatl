@@ -1,9 +1,7 @@
 const std = @import("std");
 
 pub fn build(b: *std.Build) void {
-    b.addModule(.{
-        .name = "tatl",
-        .source_file = std.Build.FileSource.relative("tatl.zig"),
-        .dependencies = &[_]std.Build.ModuleDependency{},
+    _ = b.addModule("tatl", .{
+        .root_source_file = .{ .path = "tatl.zig" },
     });
 }

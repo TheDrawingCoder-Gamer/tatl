@@ -5,7 +5,6 @@ const Allocator = std.mem.Allocator;
 const ArrayListUnmanaged = std.ArrayListUnmanaged;
 
 const File = std.fs.File;
-const Reader = File.Reader;
 
 pub const AsepriteImportError = error{
     InvalidFile,
@@ -47,21 +46,21 @@ pub const RGBA = struct {
     b: u8,
     a: u8,
 
-    pub fn deserializeOld(reader: Reader) !RGBA {
+    pub fn deserializeOld(reader: anytype) !RGBA {
         return RGBA{
-            .r = try reader.readIntLittle(u8),
-            .g = try reader.readIntLittle(u8),
-            .b = try reader.readIntLittle(u8),
+            .r = try reader.readByte(),
+            .g = try reader.readByte(),
+            .b = try reader.readByte(),
             .a = 255,
         };
     }
 
-    pub fn deserializeNew(reader: Reader) !RGBA {
+    pub fn deserializeNew(reader: anytype) !RGBA {
         return RGBA{
-            .r = try reader.readIntLittle(u8),
-            .g = try reader.readIntLittle(u8),
-            .b = try reader.readIntLittle(u8),
-            .a = try reader.readIntLittle(u8),
+            .r = try reader.readByte(),
+            .g = try reader.readByte(),
+            .b = try reader.readByte(),
+            .a = try reader.readByte(),
         };
     }
 
@@ -78,18 +77,18 @@ pub const Palette = struct {
     transparent_index: u8,
     names: [][]const u8,
 
-    pub fn deserializeOld(prev_pal: Palette, reader: Reader) !Palette {
+    pub fn deserializeOld(prev_pal: Palette, reader: anytype) !Palette {
         var pal = prev_pal;
 
-        const packets = try reader.readIntLittle(u16);
+        const packets = try reader.readInt(u16, .little);
         var skip: usize = 0;
 
         // var i: u16 = 0;
         // while (i < packets) : (i += 1) {
-        for (0..packets) |i| {
-            skip += try reader.readIntLittle(u8);
+        for (0..packets) |_| {
+            skip += try reader.readByte();
             const size: u16 = val: {
-                const s = try reader.readIntLittle(u8);
+                const s = try reader.readByte();
                 break :val if (s == 0) @as(u16, 256) else s;
             };
 
@@ -102,20 +101,21 @@ pub const Palette = struct {
         return pal;
     }
 
-    pub fn deserializeNew(prev_pal: Palette, allocator: Allocator, reader: Reader) !Palette {
+    pub fn deserializeNew(prev_pal: Palette, allocator: Allocator, reader: anytype) !Palette {
         var pal = prev_pal;
 
-        const size = try reader.readIntLittle(u32);
+        const size = try reader.readInt(u32, .little);
         if (pal.colors.len != size) {
             pal.colors = try allocator.realloc(pal.colors, size);
             pal.names = try allocator.realloc(pal.names, size);
         }
-        const from = try reader.readIntLittle(u32);
-        const to = try reader.readIntLittle(u32);
+        const from = try reader.readInt(u32, .little);
+        const to = try reader.readInt(u32, .little);
 
         try reader.skipBytes(8, .{});
 
         for (pal.colors[from .. to + 1], 0..) |*entry, i| {
+            // endian?
             const flags = try reader.readStruct(PaletteFlags);
             entry.* = try RGBA.deserializeNew(reader);
             if (flags.has_name)
@@ -177,14 +177,14 @@ pub const Layer = struct {
     name: []const u8,
     user_data: UserData,
 
-    pub fn deserialize(allocator: Allocator, reader: Reader) !Layer {
+    pub fn deserialize(allocator: Allocator, reader: anytype) !Layer {
         var result: Layer = undefined;
         result.flags = try reader.readStruct(LayerFlags);
-        result.type = try reader.readEnum(LayerType, .Little);
-        result.child_level = try reader.readIntLittle(u16);
+        result.type = try reader.readEnum(LayerType, .little);
+        result.child_level = try reader.readInt(u16, .little);
         try reader.skipBytes(4, .{});
-        result.blend_mode = try reader.readEnum(LayerBlendMode, .Little);
-        result.opacity = try reader.readIntLittle(u8);
+        result.blend_mode = try reader.readEnum(LayerBlendMode, .little);
+        result.opacity = try reader.readByte();
         try reader.skipBytes(3, .{});
         result.name = try readSlice(u8, u16, allocator, reader);
         result.user_data = UserData{ .text = "", .color = [4]u8{ 0, 0, 0, 0 } };
@@ -201,22 +201,21 @@ pub const ImageCel = struct {
         color_depth: ColorDepth,
         compressed: bool,
         allocator: Allocator,
-        reader: Reader,
+        reader: anytype,
     ) !ImageCel {
         var result: ImageCel = undefined;
-        result.width = try reader.readIntLittle(u16);
-        result.height = try reader.readIntLittle(u16);
+        result.width = try reader.readInt(u16, .little);
+        result.height = try reader.readInt(u16, .little);
 
-        const size = @intCast(usize, result.width) *
-            @intCast(usize, result.height) *
-            @intCast(usize, @enumToInt(color_depth) / 8);
+        const size = @as(usize, @intCast(result.width)) *
+            @as(usize, @intCast(result.height)) *
+            @as(usize, @intFromEnum(color_depth) / 8);
         result.pixels = try allocator.alloc(u8, size);
         errdefer allocator.free(result.pixels);
 
         if (compressed) {
-            var zlib_stream = try zlib.zlibStream(allocator, reader);
-            defer zlib_stream.deinit();
-            _ = try zlib_stream.reader().readAll(result.pixels);
+            var fba = std.io.fixedBufferStream(result.pixels);
+            try zlib.decompress(reader, fba.writer());
         } else {
             try reader.readNoEof(result.pixels);
         }
@@ -228,8 +227,8 @@ pub const ImageCel = struct {
 pub const LinkedCel = struct {
     frame: u16,
 
-    pub fn deserialize(reader: Reader) !LinkedCel {
-        return LinkedCel{ .frame = try reader.readIntLittle(u16) };
+    pub fn deserialize(reader: anytype) !LinkedCel {
+        return LinkedCel{ .frame = try reader.readInt(u16, .little) };
     }
 };
 
@@ -256,14 +255,14 @@ pub const Cel = struct {
     extra: CelExtra,
     user_data: UserData,
 
-    pub fn deserialize(color_depth: ColorDepth, allocator: Allocator, reader: Reader) !Cel {
+    pub fn deserialize(color_depth: ColorDepth, allocator: Allocator, reader: anytype) !Cel {
         var result: Cel = undefined;
-        result.layer = try reader.readIntLittle(u16);
-        result.x = try reader.readIntLittle(i16);
-        result.y = try reader.readIntLittle(i16);
-        result.opacity = try reader.readIntLittle(u8);
+        result.layer = try reader.readInt(u16, .little);
+        result.x = try reader.readInt(i16, .little);
+        result.y = try reader.readInt(i16, .little);
+        result.opacity = try reader.readByte();
 
-        const cel_type = try reader.readEnum(CelType, .Little);
+        const cel_type = try reader.readEnum(CelType, .little);
         try reader.skipBytes(7, .{});
         result.data = switch (cel_type) {
             .raw_image => CelData{
@@ -301,17 +300,17 @@ pub const CelExtra = struct {
     height: u32,
 
     pub fn isEmpty(self: CelExtra) bool {
-        return @bitCast(u128, self) == 0;
+        return @as(u128, @bitCast(self)) == 0;
     }
 
-    pub fn deserialize(reader: Reader) !CelExtra {
+    pub fn deserialize(reader: anytype) !CelExtra {
         const flags = try reader.readStruct(CelExtraFlags);
         if (flags.precise_bounds) {
             return CelExtra{
-                .x = try reader.readIntLittle(u32),
-                .y = try reader.readIntLittle(u32),
-                .width = try reader.readIntLittle(u32),
-                .height = try reader.readIntLittle(u32),
+                .x = try reader.readInt(u32, .little),
+                .y = try reader.readInt(u32, .little),
+                .width = try reader.readInt(u32, .little),
+                .height = try reader.readInt(u32, .little),
             };
         } else {
             return CelExtra{
@@ -343,11 +342,11 @@ pub const ColorProfile = struct {
     gamma: u32,
     icc_data: []const u8,
 
-    pub fn deserialize(allocator: Allocator, reader: Reader) !ColorProfile {
+    pub fn deserialize(allocator: Allocator, reader: anytype) !ColorProfile {
         var result: ColorProfile = undefined;
-        result.type = try reader.readEnum(ColorProfileType, .Little);
+        result.type = try reader.readEnum(ColorProfileType, .little);
         result.flags = try reader.readStruct(ColorProfileFlags);
-        result.gamma = try reader.readIntLittle(u32);
+        result.gamma = try reader.readInt(u32, .little);
         try reader.skipBytes(8, .{});
         // zig fmt: off
         result.icc_data = if (result.type == .icc)
@@ -372,11 +371,11 @@ pub const Tag = struct {
     color: [3]u8,
     name: []const u8,
 
-    pub fn deserialize(allocator: Allocator, reader: Reader) !Tag {
+    pub fn deserialize(allocator: Allocator, reader: anytype) !Tag {
         var result: Tag = undefined;
-        result.from = try reader.readIntLittle(u16);
-        result.to = try reader.readIntLittle(u16);
-        result.direction = try reader.readEnum(AnimationDirection, .Little);
+        result.from = try reader.readInt(u16, .little);
+        result.to = try reader.readInt(u16, .little);
+        result.direction = try reader.readEnum(AnimationDirection, .little);
         try reader.skipBytes(8, .{});
         result.color = try reader.readBytesNoEof(3);
         try reader.skipBytes(1, .{});
@@ -384,8 +383,8 @@ pub const Tag = struct {
         return result;
     }
 
-    pub fn deserializeAll(allocator: Allocator, reader: Reader) ![]Tag {
-        const len = try reader.readIntLittle(u16);
+    pub fn deserializeAll(allocator: Allocator, reader: anytype) ![]Tag {
+        const len = try reader.readInt(u16, .little);
         try reader.skipBytes(8, .{});
         const result = try allocator.alloc(Tag, len);
         errdefer allocator.free(result);
@@ -410,10 +409,10 @@ pub const UserData = struct {
     pub const empty = UserData{ .text = "", .color = [4]u8{ 0, 0, 0, 0 } };
 
     pub fn isEmpty(user_data: UserData) bool {
-        return user_data.text.len == 0 and @bitCast(u32, user_data.color) == 0;
+        return user_data.text.len == 0 and @as(u32, @bitCast(user_data.color)) == 0;
     }
 
-    pub fn deserialize(allocator: Allocator, reader: Reader) !UserData {
+    pub fn deserialize(allocator: Allocator, reader: anytype) !UserData {
         var result: UserData = undefined;
         const flags = try reader.readStruct(UserDataFlags);
         // zig fmt: off
@@ -477,18 +476,18 @@ pub const SliceKey = struct {
         y: i32,
     },
 
-    pub fn deserialize(flags: SliceFlags, reader: Reader) !SliceKey {
+    pub fn deserialize(flags: SliceFlags, reader: anytype) !SliceKey {
         var result: SliceKey = undefined;
-        result.frame = try reader.readIntLittle(u32);
-        result.x = try reader.readIntLittle(i32);
-        result.y = try reader.readIntLittle(i32);
-        result.width = try reader.readIntLittle(u32);
-        result.height = try reader.readIntLittle(u32);
+        result.frame = try reader.readInt(u32, .little);
+        result.x = try reader.readInt(i32, .little);
+        result.y = try reader.readInt(i32, .little);
+        result.width = try reader.readInt(u32, .little);
+        result.height = try reader.readInt(u32, .little);
         result.center = if (flags.nine_patch) .{
-            .x = try reader.readIntLittle(i32),
-            .y = try reader.readIntLittle(i32),
-            .width = try reader.readIntLittle(u32),
-            .height = try reader.readIntLittle(u32),
+            .x = try reader.readInt(i32, .little),
+            .y = try reader.readInt(i32, .little),
+            .width = try reader.readInt(u32, .little),
+            .height = try reader.readInt(u32, .little),
         } else .{
             .x = 0,
             .y = 0,
@@ -496,8 +495,8 @@ pub const SliceKey = struct {
             .height = 0,
         };
         result.pivot = if (flags.has_pivot) .{
-            .x = try reader.readIntLittle(i32),
-            .y = try reader.readIntLittle(i32),
+            .x = try reader.readInt(i32, .little),
+            .y = try reader.readInt(i32, .little),
         } else .{
             .x = 0,
             .y = 0,
@@ -512,9 +511,9 @@ pub const Slice = struct {
     keys: []SliceKey,
     user_data: UserData,
 
-    pub fn deserialize(allocator: Allocator, reader: Reader) !Slice {
+    pub fn deserialize(allocator: Allocator, reader: anytype) !Slice {
         var result: Slice = undefined;
-        const key_len = try reader.readIntLittle(u32);
+        const key_len = try reader.readInt(u32, .little);
         result.flags = try reader.readStruct(SliceFlags);
         try reader.skipBytes(4, .{});
         result.name = try readSlice(u8, u16, allocator, reader);
@@ -566,27 +565,27 @@ pub const AsepriteImport = struct {
 
     pub const magic: u16 = 0xA5E0;
 
-    pub fn deserialize(allocator: Allocator, reader: Reader) !AsepriteImport {
+    pub fn deserialize(allocator: Allocator, reader: anytype) !AsepriteImport {
         var result: AsepriteImport = undefined;
         try reader.skipBytes(4, .{});
-        if (magic != try reader.readIntLittle(u16)) {
+        if (magic != try reader.readInt(u16, .little)) {
             return error.InvalidFile;
         }
-        const frame_count = try reader.readIntLittle(u16);
-        result.width = try reader.readIntLittle(u16);
-        result.height = try reader.readIntLittle(u16);
-        result.color_depth = try reader.readEnum(ColorDepth, .Little);
+        const frame_count = try reader.readInt(u16, .little);
+        result.width = try reader.readInt(u16, .little);
+        result.height = try reader.readInt(u16, .little);
+        result.color_depth = try reader.readEnum(ColorDepth, .little);
         result.flags = try reader.readStruct(FileHeaderFlags);
         try reader.skipBytes(10, .{});
-        const transparent_index = try reader.readIntLittle(u8);
+        const transparent_index = try reader.readByte();
         try reader.skipBytes(3, .{});
-        var color_count = try reader.readIntLittle(u16);
-        result.pixel_width = try reader.readIntLittle(u8);
-        result.pixel_height = try reader.readIntLittle(u8);
-        result.grid_x = try reader.readIntLittle(i16);
-        result.grid_y = try reader.readIntLittle(i16);
-        result.grid_width = try reader.readIntLittle(u16);
-        result.grid_height = try reader.readIntLittle(u16);
+        var color_count = try reader.readInt(u16, .little);
+        result.pixel_width = try reader.readByte();
+        result.pixel_height = try reader.readByte();
+        result.grid_x = try reader.readInt(i16, .little);
+        result.grid_y = try reader.readInt(i16, .little);
+        result.grid_width = try reader.readInt(u16, .little);
+        result.grid_height = try reader.readInt(u16, .little);
 
         if (color_count == 0)
             color_count = 256;
@@ -627,13 +626,13 @@ pub const AsepriteImport = struct {
             var last_cel: ?*Cel = null;
 
             try reader.skipBytes(4, .{});
-            if (Frame.magic != try reader.readIntLittle(u16)) {
+            if (Frame.magic != try reader.readInt(u16, .little)) {
                 return error.InvalidFrameHeader;
             }
-            const old_chunks = try reader.readIntLittle(u16);
-            frame.duration = try reader.readIntLittle(u16);
+            const old_chunks = try reader.readInt(u16, .little);
+            frame.duration = try reader.readInt(u16, .little);
             try reader.skipBytes(2, .{});
-            const new_chunks = try reader.readIntLittle(u32);
+            const new_chunks = try reader.readInt(u32, .little);
             const chunks = if (old_chunks == 0xFFFF and old_chunks < new_chunks)
                 new_chunks
             else
@@ -641,12 +640,12 @@ pub const AsepriteImport = struct {
 
             // var i: u32 = 0;
             // while (i < chunks) : (i += 1) {
-            for (0..chunks) |i| {
+            for (0..chunks) |_| {
                 const chunk_start = try reader.context.getPos();
-                const chunk_size = try reader.readIntLittle(u32);
+                const chunk_size = try reader.readInt(u32, .little);
                 const chunk_end = chunk_start + chunk_size;
 
-                const chunk_type = try reader.readEnum(ChunkType, .Little);
+                const chunk_type = try reader.readEnum(ChunkType, .little);
                 switch (chunk_type) {
                     .OldPaletteA, .OldPaletteB => {
                         if (!using_new_palette)
@@ -759,14 +758,14 @@ pub const AsepriteImport = struct {
     }
 };
 
-fn readSlice(comptime SliceT: type, comptime LenT: type, allocator: Allocator, reader: Reader) ![]SliceT {
+fn readSlice(comptime SliceT: type, comptime LenT: type, allocator: Allocator, reader: anytype) ![]SliceT {
     const len = (try reader.readIntLittle(LenT)) * @sizeOf(SliceT);
-    var bytes = try allocator.alloc(u8, len);
+    const bytes = try allocator.alloc(u8, len);
     errdefer allocator.free(bytes);
     try reader.readNoEof(bytes);
     return std.mem.bytesAsSlice(SliceT, bytes);
 }
 
-pub fn import(allocator: Allocator, reader: Reader) !AsepriteImport {
+pub fn import(allocator: Allocator, reader: anytype) !AsepriteImport {
     return AsepriteImport.deserialize(allocator, reader);
 }
