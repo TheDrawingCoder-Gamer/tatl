@@ -708,11 +708,11 @@ pub const AsepriteImport = struct {
                 try reader.context.seekTo(chunk_end);
             }
 
-            frame.cels = cels.toOwnedSlice(allocator);
+            frame.cels = try cels.toOwnedSlice(allocator);
             errdefer allocator.free(frame.cels);
         }
-        result.layers = layers.toOwnedSlice(allocator);
-        result.slices = slices.toOwnedSlice(allocator);
+        result.layers = try layers.toOwnedSlice(allocator);
+        result.slices = try slices.toOwnedSlice(allocator);
         return result;
     }
 
@@ -759,7 +759,7 @@ pub const AsepriteImport = struct {
 };
 
 fn readSlice(comptime SliceT: type, comptime LenT: type, allocator: Allocator, reader: anytype) ![]SliceT {
-    const len = (try reader.readIntLittle(LenT)) * @sizeOf(SliceT);
+    const len = (try reader.readInt(LenT, .little)) * @sizeOf(SliceT);
     const bytes = try allocator.alloc(u8, len);
     errdefer allocator.free(bytes);
     try reader.readNoEof(bytes);
