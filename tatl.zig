@@ -395,11 +395,12 @@ pub const Tag = struct {
     }
 };
 
-pub const UserDataFlags = packed struct {
+pub const UserDataFlags = packed struct(u32) {
     has_text: bool,
     has_color: bool,
+    has_properties: bool,
 
-    padding: u14 = 0,
+    padding: u29 = 0,
 };
 
 pub const UserData = struct {
@@ -433,6 +434,7 @@ const UserDataChunks = union(enum) {
     Layer: *Layer,
     Cel: *Cel,
     Slice: *Slice,
+    AsepriteImport: *AsepriteImport,
 
     pub fn new(pointer: anytype) UserDataChunks {
         const name = comptime value: {
@@ -448,6 +450,7 @@ const UserDataChunks = union(enum) {
             .Layer => |p| p.*.user_data = user_data,
             .Cel => |p| p.*.user_data = user_data,
             .Slice => |p| p.*.user_data = user_data,
+            .AsepriteImport => |p| p.*.sprite_userdata = user_data,
         }
     }
 };
@@ -562,6 +565,7 @@ pub const AsepriteImport = struct {
     slices: []Slice,
     tags: []Tag,
     frames: []Frame,
+    sprite_userdata: UserData,
 
     pub const magic: u16 = 0xA5E0;
 
@@ -586,6 +590,8 @@ pub const AsepriteImport = struct {
         result.grid_y = try reader.readInt(i16, .little);
         result.grid_width = try reader.readInt(u16, .little);
         result.grid_height = try reader.readInt(u16, .little);
+
+        result.sprite_userdata = UserData.empty;
 
         if (color_count == 0)
             color_count = 256;
@@ -620,7 +626,7 @@ pub const AsepriteImport = struct {
         var using_new_palette = false;
         var last_with_user_data: ?UserDataChunks = null;
 
-        for (result.frames) |*frame| {
+        for (result.frames, 0..) |*frame, frame_num| {
             var cels = try ArrayListUnmanaged(Cel).initCapacity(allocator, 0);
             errdefer cels.deinit(allocator);
             var last_cel: ?*Cel = null;
@@ -689,6 +695,9 @@ pub const AsepriteImport = struct {
                             allocator,
                             reader,
                         );
+                        if (frame_num == 0 and last_with_user_data == null) {
+                            last_with_user_data = UserDataChunks.new(&result);
+                        }
                     },
                     .UserData => {
                         const user_data = try UserData.deserialize(allocator, reader);
