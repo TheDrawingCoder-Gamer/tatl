@@ -626,7 +626,7 @@ pub const AsepriteImport = struct {
         var using_new_palette = false;
         var last_with_user_data: ?UserDataChunks = null;
 
-        for (result.frames, 0..) |*frame, frame_num| {
+        for (result.frames) |*frame| {
             var cels = try ArrayListUnmanaged(Cel).initCapacity(allocator, 0);
             errdefer cels.deinit(allocator);
             var last_cel: ?*Cel = null;
@@ -656,6 +656,7 @@ pub const AsepriteImport = struct {
                     .OldPaletteA, .OldPaletteB => {
                         if (!using_new_palette)
                             result.palette = try Palette.deserializeOld(result.palette, reader);
+                        last_with_user_data = UserDataChunks.new(&result);
                     },
                     .Layer => {
                         try layers.append(allocator, try Layer.deserialize(allocator, reader));
@@ -695,9 +696,7 @@ pub const AsepriteImport = struct {
                             allocator,
                             reader,
                         );
-                        if (frame_num == 0 and last_with_user_data == null) {
-                            last_with_user_data = UserDataChunks.new(&result);
-                        }
+                        last_with_user_data = UserDataChunks.new(&result);
                     },
                     .UserData => {
                         const user_data = try UserData.deserialize(allocator, reader);
